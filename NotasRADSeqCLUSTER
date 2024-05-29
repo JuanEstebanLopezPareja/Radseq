@@ -1,0 +1,138 @@
+# Datos de RADseq con Conda en el CLuster
+
+A continuacion van las lineas en Bash de como correr el programa en el cluster.
+Con el fin de correr la version de ipyrad instalada en el cluster
+
+```
+
+module load conda/4.9.2
+
+conda env list
+
+source activate /datacnmat01/biologia/biologia.evolutiva/usuarios/class.fs/.conda/envs/ipyrad
+
+```
+A continuacion se encuentran las lineas para descargar las secuencias del articulo para su proximo procesamiento
+
+```
+/home/class.fs/data/software/sratoolkit.3.1.0-centos_linux64/bin/prefetch --option-file <archivo_seq.txt>
+
+/home/class.fs/data/software/sratoolkit.3.1.0-centos_linux64/bin/fastq-dump --split-files <ID/ID.sra>
+
+```
+En el siguiente for loop se crea los archivo fastq que se utilizan para ensamblar
+
+```
+IFS=$'\n'
+for id in $(ls -d /home/class.fs/data/fabian/radseq/*/ | cut -f 7 -d "/"); do
+/home/class.fs/data/software/sratoolkit.3.1.0-centos_linux64/bin/fastq-dump --split-files $id/$id.sra; done
+```
+
+## Calidad de las secuencias
+
+Se corre el programa fastqc para visualizar y entender las calidades de las secuencias
+``` fastqc source_to_sequence/*.fq ```
+
+Para quitar los adaptadores se debe correr esta linea en un script
+
+```
+#!/bin/bash
+#SBATCH -p normal # Partición (cola)
+#SBATCH -N 1 # Número de nodos
+#SBATCH -n 12 # Número de núcleos
+#SBATCH -t 2-23:00 # Límite de tiempo (D-HH:MM)
+#SBATCH -o salidamult.out # Salida STDOUT
+#SBATCH -e errormult.err # Salida STDERR
+# mail alert at start, end and abortion of execution
+#SBATCH --mail-type=ALL
+
+# send mail to this address
+#SBATCH --mail-user=juanesteba.lopez@urosario.edu.co
+#SBATCH --mail-user=lopezparejaad@gmail.com
+
+module load conda/4.9.2
+
+source activate /datacnmat01/biologia/biologia.evolutiva/usuarios/class.fs/.conda/envs/ipyrad
+
+trim_galore --cores 12 --phred33 --output_dir /datacnmat01/biologia/biologia.evolutiva/usuarios/class.fs/JUANES/PROYECTO/radseq/ --length 36 -q 5 --stringency 1 -e 0.1 *.fastq
+
+```
+
+```scp -i ~/llaves/class.fs.pem -P 37022 class.fs@loginpub-hpc.urosario.edu.co:/home/class.fs/data/JUANES/admix/unlinked.4.Q . ```
+
+
+```scp -i ~/llaves/class.fs.pem -P 37022 class.fs@login01-hpc.urosario.edu.co:/home/class.fs/data/JUANES/admix/unlinked.4.Q . ```
+
+# SCRIPT de Fabian para elegir los ramdom snp sin plink
+
+```
+#!/bin/bash
+
+# Usage: ./random_snp.sh <your_vcf_file>
+
+# Check if a file name is provided
+file=${1?Error: no file name provided}
+
+# Create a file with the number of SNPs per locus (excluding header lines)
+grep "#" "$file" > random_vcf.vcf
+lines=$(wc -l random_vcf.vcf | cut -f 1 -d " ")
+
+# Calculate the repetitions per locus
+cut -f 1 "$file" | awk -v var="$lines" 'NR > var' | sort | uniq -c | sed -E 's/^\s+(\w+)/\1/g' > counts_by_loci.txt
+
+# Select a random nucleotide for each locus
+cat counts_by_loci.txt | while read i;
+do
+  number=$(grep "$i" counts_by_loci.txt | cut -d " " -f 1)
+  locus=$(grep "$i" counts_by_loci.txt | cut -d " " -f 2)
+  grep "$locus" "$file" | shuf -n 1 >> random_vcf.vcf
+done
+
+# Clean up temporary files
+rm counts_by_loci.txt
+
+echo "Random SNP selection completed. Output saved to random_vcf.vcf."
+```
+## Script para ipyrad assembly
+```
+
+#!/bin/bash
+#SBATCH -p normal # Partición (cola)
+#SBATCH -N 1 # Número de nodos
+#SBATCH -n 12 # Número de núcleos
+#SBATCH -t 2-23:00 # Límite de tiempo (D-HH:MM)
+#SBATCH -o salstruct.out # Salida STDOUT
+#SBATCH -e salstruct.err # Salida STDERR
+# mail alert at start, end and abortion of execution
+#SBATCH --mail-type=ALL
+
+# send mail to this address
+#SBATCH --mail-user=juanesteba.lopez@urosario.edu.co
+#SBATCH --mail-user=lopezparejaad@gmail.com
+
+module load conda/4.9.2
+
+source activate /datacnmat01/biologia/biologia.evolutiva/usuarios/class.fs/.conda/envs/ipyrad
+
+
+
+
+```
+# Version sin ipyrad
+## Comandos para generar archivo vcf
+Puesto que ya tenemos el ensamblaje de ipyrad se realiza el mapeo al ensamblaje llamado mapeo.fas
+La siguiente linea genera el Trinity_index, una serie de archivos .bt2 necesarios para correr Trinity
+```
+module load bowtie2/2.4.4
+
+```
+## Comandos para generar el admixture con el vcf arrojado por bowtie y samtools
+Con la siguiente linea se genera  los archivos bim y fam para el admixture
+la linea siguiente utiliza el .vcf filtrado con las lineas de la seccion anterior
+``` plink --vcf new_vcf.recode.vcf --make-bed --double-id --allow-extra-chr --out new_file```.
+En cambio la siguiente linea de codigo, corre con la base .vcf inicial arrojada por ipyrad y procesada con samtools unicamente:
+``` plink --vcf gastercant1.vcf --make-bed --double-id --allow-extra-chr --out unfiltered```.
+
+Para remover todos los strings de los archivos .bim se utliza la siguiente linea ```sed -i "s/locus_//g" new_file.bim```.
+
+Para el elgir el mejor numero de K (K mean clustering K values, parametro arbitrario siemrpe) se corren las siguiente lineas: ``` for K in 1 2 3 4 5 6 7 8 9 10;  do admixture --cv=10 unlinked.bed $K | tee log${K}.out; done ``` ```  for i in $(ls log*);do grep "K=" $i | cut -f 3,4 -d " " | sed -r 's/:/=/g' >> bestk.txt; done```
